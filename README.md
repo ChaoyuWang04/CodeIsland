@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/notch-panel.png" width="720" alt="CodeIsland panel expanded from the MacBook notch">
+  <img src="docs/images/readme-hero.png" width="760" alt="CodeIsland expanded from the MacBook notch, showing Claude Code, Codex, Cursor and Gemini CLI sessions">
 </p>
 
 ## Why CodeIsland?
@@ -86,6 +86,15 @@ It works with **30+ AI coding tools**, installs its hooks for you, and keeps eve
 </td>
 </tr>
 </table>
+
+<p align="center">
+  <img src="docs/images/readme-approval.png" width="640" alt="Approval card: allow or deny a Bash command from the notch"><br>
+  <sub>Approve a tool call without leaving your editor…</sub>
+</p>
+<p align="center">
+  <img src="docs/images/readme-question.png" width="640" alt="Question card: pick an answer to the agent's question from the notch"><br>
+  <sub>…or answer the agent's question right in the notch.</sub>
+</p>
 
 ## Supported tools
 

@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/notch-panel.png" width="720" alt="从 MacBook 刘海展开的 CodeIsland 面板">
+  <img src="docs/images/readme-hero-zh.png" width="760" alt="从 MacBook 刘海展开的 CodeIsland，显示 Claude Code、Codex、Cursor 和 Gemini CLI 的会话">
 </p>
 
 ## 为什么需要 CodeIsland？
@@ -86,6 +86,15 @@
 </td>
 </tr>
 </table>
+
+<p align="center">
+  <img src="docs/images/readme-approval-zh.png" width="640" alt="审批卡片：在刘海上批准或拒绝一条 Bash 命令"><br>
+  <sub>不离开编辑器，直接批准工具调用……</sub>
+</p>
+<p align="center">
+  <img src="docs/images/readme-question-zh.png" width="640" alt="提问卡片：在刘海上选择 Agent 问题的答案"><br>
+  <sub>……或者就在刘海里回答 Agent 的提问。</sub>
+</p>
 
 ## 支持的工具
 

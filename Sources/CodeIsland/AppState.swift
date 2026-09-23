@@ -187,6 +187,12 @@ final class AppState {
     /// app-server delivered `thread/closed`.
     @ObservationIgnored
     var closedCodexAppThreads: [String: Date] = [:]
+    /// Grok sessions retired because their pager process started another
+    /// session (#318), mapped to that process. While it lives, discovery and
+    /// trailing passive hooks must not resurrect the card; a new prompt or
+    /// SessionStart for the session means the user switched back to it.
+    @ObservationIgnored
+    var supersededGrokSessions: [String: ProcessIdentity] = [:]
 
     /// Per-agent AiWork/Agentix daemon watch clients (`sessions.watch`).
     /// Keyed by agent id (e.g. `"coder"`). See AppState+AiWorkWatch.
@@ -1409,6 +1415,13 @@ final class AppState {
             return
         }
 
+        if shouldDropEventForSupersededGrokSession(
+            sessionId: sessionId,
+            normalizedEventName: normalizedEventName
+        ) {
+            return
+        }
+
         if source?.lowercased() == "codex",
            event.rawJSON["_term_bundle"] as? String == Self.codexAppBundleId,
            let rawProviderSessionId = event.rawJSON["session_id"] as? String {
@@ -1531,6 +1544,10 @@ final class AppState {
             executeEffect(effect, sessionId: sessionId)
         }
 
+        if normalizedEventName == "SessionStart" {
+            retireGrokSessionsSuperseded(bySessionStartOf: sessionId)
+        }
+
         if let provider = sessions[sessionId]?.source,
            sessions[sessionId]?.isRemote != true,
            SessionTitleStore.supports(provider: provider) {
@@ -1554,6 +1571,86 @@ final class AppState {
         scheduleSave()
         startRotationIfNeeded()
         refreshDerivedState()
+    }
+
+    /// Grok's TUI switches the session it hosts in place (`/resume`, `/new`, a
+    /// welcome-screen pick) without any hook for the session it leaves, so
+    /// that card stayed alive for as long as the process did (#318). One pager
+    /// process can also run several top-level sessions at once (Agent
+    /// Dashboard dispatch, `/fork`), so only an idle card — no turn, no
+    /// working subagent — counts as superseded. Every other provider keeps its
+    /// many-sessions-per-PID model (Codex app-server, IDEs, opencode server).
+    nonisolated static func isGrokSessionSupersededBySessionStart(
+        candidate: SessionSnapshot,
+        candidateId: String,
+        started: SessionSnapshot,
+        startedId: String
+    ) -> Bool {
+        guard candidateId != startedId,
+              started.source == "grok",
+              candidate.source == "grok",
+              !started.isRemote,
+              !candidate.isRemote,
+              let pid = started.cliPid,
+              pid > 0,
+              candidate.cliPid == pid,
+              candidate.status == .idle else {
+            return false
+        }
+        return !candidate.subagents.values.contains { $0.status != .idle }
+    }
+
+    private func retireGrokSessionsSuperseded(bySessionStartOf sessionId: String) {
+        guard let started = sessions[sessionId],
+              started.source == "grok",
+              let pid = started.cliPid else { return }
+        supersededGrokSessions = supersededGrokSessions.filter { Self.isLiveProcess($0.value) }
+
+        let superseded = sessions.compactMap { key, candidate -> String? in
+            guard Self.isGrokSessionSupersededBySessionStart(
+                candidate: candidate,
+                candidateId: key,
+                started: started,
+                startedId: sessionId
+            ),
+            !permissionQueue.contains(where: { ($0.event.sessionId ?? "default") == key }),
+            !questionQueue.contains(where: { ($0.event.sessionId ?? "default") == key }) else {
+                return nil
+            }
+            return key
+        }
+        guard !superseded.isEmpty else { return }
+
+        let process = Self.liveProcessIdentity(for: pid) ?? ProcessIdentity(pid: pid, startTime: nil)
+        for key in superseded {
+            log.info("retiring superseded grok session=\(key, privacy: .public) pid=\(pid, privacy: .public) new=\(sessionId, privacy: .public)")
+            supersededGrokSessions[key] = process
+            removeSession(key)
+        }
+    }
+
+    /// A retired Grok session can still emit passive hooks (the `idle_prompt`
+    /// Notification about a minute after it settles, the session-end Stop and
+    /// SessionEnd when Grok quits). Only generation-start activity revives it.
+    private func shouldDropEventForSupersededGrokSession(
+        sessionId: String,
+        normalizedEventName: String
+    ) -> Bool {
+        guard let process = supersededGrokSessions[sessionId] else { return false }
+        if normalizedEventName == "SessionStart"
+            || normalizedEventName == "UserPromptSubmit"
+            || !Self.isLiveProcess(process) {
+            supersededGrokSessions.removeValue(forKey: sessionId)
+            return false
+        }
+        return true
+    }
+
+    private func isSupersededGrokDiscovery(_ info: DiscoveredSession) -> Bool {
+        guard let process = supersededGrokSessions[info.sessionId] else { return false }
+        if Self.isLiveProcess(process) { return true }
+        supersededGrokSessions.removeValue(forKey: info.sessionId)
+        return false
     }
 
     func removeRemoteSessions(hostId: String) {
@@ -3293,6 +3390,9 @@ final class AppState {
         var didMutate = false
         for info in discovered {
             if shouldSuppressClosedCodexDesktopDiscovery(info) {
+                continue
+            }
+            if isSupersededGrokDiscovery(info) {
                 continue
             }
             if routeDiscoveredSubsessionIfNeeded(info) {
@@ -5376,20 +5476,46 @@ final class AppState {
                 let chatPath = "\(candidate.directory)/chat_history.jsonl"
                 let hasChat = fm.fileExists(atPath: chatPath)
                 let messages = hasChat ? readRecentFromTranscript(path: chatPath).1 : []
-                results.append(DiscoveredSession(
+                results.append(grokDiscoveredSession(
                     sessionId: candidate.sessionId,
                     cwd: cwd,
-                    tty: nil,
                     model: candidate.model,
                     pid: pid,
                     modifiedAt: candidate.activityAt,
                     recentMessages: messages,
-                    source: "grok",
                     transcriptPath: hasChat ? chatPath : nil
                 ))
             }
         }
         return results
+    }
+
+    /// Grok hooks and Grok discovery both key a card by Grok's own session id,
+    /// so the discovered id doubles as the provider id. Carrying it stops the
+    /// same-PID dedup in `integrateDiscovered` from folding a different Grok
+    /// session — such as the one `/resume` just loaded — into an existing card
+    /// and rewriting that card's identity, transcript and messages (#318).
+    nonisolated static func grokDiscoveredSession(
+        sessionId: String,
+        cwd: String,
+        model: String?,
+        pid: pid_t,
+        modifiedAt: Date,
+        recentMessages: [ChatMessage],
+        transcriptPath: String?
+    ) -> DiscoveredSession {
+        DiscoveredSession(
+            sessionId: sessionId,
+            cwd: cwd,
+            tty: nil,
+            model: model,
+            pid: pid,
+            modifiedAt: modifiedAt,
+            recentMessages: recentMessages,
+            source: "grok",
+            transcriptPath: transcriptPath,
+            providerSessionId: sessionId
+        )
     }
 
     private nonisolated static func findCopilotPids(candidatePids: [pid_t]? = nil) -> [pid_t] {

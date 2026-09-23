@@ -443,6 +443,14 @@ if resolvedTrackedPID != immediateParentPID {
 if effectiveSource == "cline" {
     json["_ppid"] = 0
 }
+// Callers that know their process is not the agent's lifetime opt out. OpenCode 2
+// runs plugins in a shared background service that outlives the client that
+// spawned it: tracked as the CLI, it would be SIGTERMed as a "reparented orphan"
+// the moment that first client quits, taking every session with it (#332).
+if json["_untracked_process"] as? Bool == true {
+    json["_ppid"] = 0
+    json.removeValue(forKey: "_hook_ppid")
+}
 
 // Validate: must have non-empty session_id
 if json["session_id"] == nil,

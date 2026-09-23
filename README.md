@@ -126,7 +126,7 @@ AI Tool (Claude/Codex/Gemini/Cursor/...)
 
 CodeIsland installs lightweight hooks into each AI tool's config. When the tool triggers an event (session start, tool call, permission request, etc.), the hook sends a JSON message through a Unix socket. CodeIsland listens on this socket and updates the notch panel instantly.
 
-For **OpenCode**, a JS plugin connects directly to the socket — no bridge binary needed.
+For **OpenCode**, a JS plugin connects directly to the socket — no bridge binary needed. The same plugin file serves OpenCode 1.x (`server()`) and OpenCode 2 (`setup()`); OpenCode 2 auto-loads it from `~/.config/opencode/plugins/`. Under OpenCode 2's shared background server, click-to-jump can only name the terminal app, not the exact tab, and questions are answered through the server's local HTTP API.
 
 For **Codex**, one extra step is yours and not something CodeIsland can do for you: Codex will not run a hook it has not been shown. After installing, start Codex and it reports `1 hook needs review before it can run.` — run `/hooks`, review the CodeIsland entries and trust them. Until then Codex simply does nothing with them, with no error, which looks exactly like CodeIsland not supporting Codex. Codex records a content hash per trusted hook in `~/.codex/config.toml` under `[hooks.state]`, so if a CodeIsland update rewrites `~/.codex/hooks.json`, the review is needed once more.
 

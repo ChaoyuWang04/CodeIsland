@@ -2562,9 +2562,13 @@ final class AppState {
         if let answer, !Self.isQoderEvent(event) {
             updatedInput["answer"] = answer
         }
+        // Structured picks for plugins that answer with label arrays: OMP/Pi,
+        // and OpenCode, whose multi-select answers are `string[]` (v1) or a
+        // multiselect form field (v2) — a ", "-joined display string can't be
+        // split back when a label itself contains ", " (#332).
+        let detailsSource = SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String)
         if !answerDetails.isEmpty,
-           SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String) == "pi",
-           event.toolUseId != nil {
+           (detailsSource == "pi" && event.toolUseId != nil) || detailsSource == "opencode" {
             updatedInput["_codeislandAnswerDetails"] = answerDetails
         }
         return updatedInput
@@ -5684,7 +5688,20 @@ final class AppState {
                 "/.opencode/bin/opencode",
             ],
             candidatePids: candidatePids
-        )
+        ).filter { pid in
+            // OpenCode 2's shared background service is the same executable as
+            // the TUI and inherits the first client's cwd, so a cwd match can
+            // land on it. It is not a session's process: it outlives the client
+            // that spawned it, and once reparented to launchd the orphan sweep
+            // would SIGTERM it — every session with it (#332).
+            guard let args = getProcessArgs(pid) else { return true }
+            return !isOpenCodeSharedService(arguments: args)
+        }
+    }
+
+    /// `opencode serve --service` — OpenCode 2's per-user shared server.
+    nonisolated static func isOpenCodeSharedService(arguments: [String]) -> Bool {
+        arguments.contains("serve") && arguments.contains("--service")
     }
 
     /// Get the current working directory of a process using proc_pidinfo

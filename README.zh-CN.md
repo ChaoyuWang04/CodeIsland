@@ -126,7 +126,7 @@ AI 工具 (Claude/Codex/Gemini/Cursor/...)
 
 CodeIsland 在每个 AI 工具的配置中安装轻量级 hooks。当工具触发事件（会话开始、工具调用、权限请求等）时，hook 通过 Unix socket 发送 JSON 消息。CodeIsland 监听此 socket 并即时更新刘海面板。
 
-**OpenCode** 使用 JS 插件直接连接 socket，无需 bridge 二进制。
+**OpenCode** 使用 JS 插件直接连接 socket，无需 bridge 二进制。同一个插件文件同时支持 OpenCode 1.x（`server()`）和 OpenCode 2（`setup()`），OpenCode 2 会自动从 `~/.config/opencode/plugins/` 加载它。OpenCode 2 默认在共享的后台服务里运行插件，因此点击跳转只能定位到终端应用、无法精确到标签页；提问卡片通过该服务的本地 HTTP 接口回答。
 
 **Codex** 多一步，而且这一步只能你自己做：Codex 不会执行没给它过目的 hook。装好之后启动 Codex，它会提示 `1 hook needs review before it can run.`，执行 `/hooks` 把 CodeIsland 的条目 review 并信任即可。在此之前 Codex 对这些 hook 不做任何事，也不报错——看起来就跟 CodeIsland 不支持 Codex 一模一样。Codex 会在 `~/.codex/config.toml` 的 `[hooks.state]` 里按内容哈希记录信任状态，所以 CodeIsland 更新重写了 `~/.codex/hooks.json` 之后，需要再 review 一次。
 

@@ -63,7 +63,7 @@ enum RemoteInstaller {
         return host.remoteSocketPath
     }
 
-    private static func remoteHookSource() -> String? {
+    static func remoteHookSource() -> String? {
         if let url = Bundle.appModule.url(forResource: "codeisland-remote-hook", withExtension: "py", subdirectory: "Resources"),
            let src = try? String(contentsOf: url) {
             return src
@@ -119,7 +119,8 @@ print(target)
     private static func configureRemoteHooks(host: RemoteHost, remoteSocketPath: String) async -> RemoteCommandResult {
         let py = configureRemoteHooksScript(host: host, remoteSocketPath: remoteSocketPath)
         // Run via the remote user's login shell so ~/.zprofile / ~/.bash_profile etc. are
-        // sourced — that's how $CODEX_HOME (and similar) reach a non-interactive ssh session.
+        // sourced — that's how $CODEX_HOME / $CLAUDE_CONFIG_DIR (and similar) reach a
+        // non-interactive ssh session. Interactive-only rc files (.bashrc/.zshrc) are not.
         // base64 keeps the script intact regardless of shell quoting.
         let encoded = Data(py.utf8).base64EncodedString()
         let inner = "echo '\(encoded)' | base64 -d | python3"
@@ -164,6 +165,21 @@ def _codex_home():
     if not raw:
         return home / ".codex"
     expanded = os.path.expanduser(raw)
+    return pathlib.Path(expanded)
+
+def _claude_config_dir():
+    # Claude Code reads $CLAUDE_CONFIG_DIR as one verbatim path, else ~/.claude (#271).
+    # None means "unset" and the caller keeps the ~/.claude default. Same rules as the
+    # Mac-side ClaudeConfigPaths.normalized() (trim, expand ~, absolute only) EXCEPT
+    # Unicode normalization: ext4/xfs are byte-preserving, so an NFC-normalized path
+    # can name a directory that does not exist. Never normalize here. Mirrored in
+    # codeisland-remote-hook.py, which must resolve the same dir.
+    raw = (os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
+    if not raw:
+        return None
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded) or expanded.strip("/") == "":
+        return None
     return pathlib.Path(expanded)
 
 def _display_path(path):
@@ -545,9 +561,15 @@ def _merge_traecli_hooks(contents, cmd):
     return merged
 
 def install_claude():
-    claude_root = home / ".claude"
+    configured_root = _claude_config_dir()
+    claude_root = configured_root or home / ".claude"
+    # One guard for both cases, no early return: with $CLAUDE_CONFIG_DIR set, a host
+    # where Claude Code is on PATH but has never run has no config dir yet, and it
+    # must still get hooks (#271).
     if not claude_root.exists() and shutil.which("claude") is None:
-        return "Claude skipped"
+        if configured_root is None:
+            return "Claude skipped"
+        return "Claude skipped (config dir not found: " + _display_path(claude_root) + ")"
 
     settings_path = claude_root / "settings.json"
     data = ensure_json(settings_path)
@@ -571,7 +593,11 @@ def install_claude():
     append_our_hooks(hooks, "PreCompact", precompact)
     data["hooks"] = hooks
     write_json(settings_path, data)
-    return "Claude ok"
+    if configured_root is None:
+        return "Claude ok"
+    # Name the dir: it is the only way to see that $CLAUDE_CONFIG_DIR actually
+    # reached the non-interactive login shell this script runs in.
+    return "Claude ok (" + _display_path(claude_root) + ")"
 
 def install_qoder():
     qoder_root = home / ".qoder"

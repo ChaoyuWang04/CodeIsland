@@ -237,6 +237,133 @@ final class RemoteInstallerHookMergeTests: XCTestCase {
         XCTAssertEqual(cmds.filter { $0.contains("CODEISLAND_SOURCE=qoder") }.count, 1, "our hook not deduped: \(cmds)")
     }
 
+    // MARK: - $CLAUDE_CONFIG_DIR on the remote host (#271)
+
+    private func assertOurClaudeHooks(in settingsPath: String, file: StaticString = #filePath, line: UInt = #line) throws {
+        let settings = try readJSON(settingsPath)
+        let hooks = try XCTUnwrap(settings["hooks"] as? [String: Any], file: file, line: line)
+        let stop = try XCTUnwrap(hooks["Stop"] as? [[String: Any]], file: file, line: line)
+        XCTAssertTrue(
+            commands(in: stop).contains { $0.contains("CODEISLAND_SOURCE=claude") },
+            "our Claude hook missing from \(settingsPath)", file: file, line: line
+        )
+    }
+
+    /// Claude Code reads hooks from $CLAUDE_CONFIG_DIR/settings.json, so that is
+    /// where they must go — a write to ~/.claude would never fire.
+    func testClaudeInstallHonoursClaudeConfigDir() throws {
+        try FileManager.default.createDirectory(
+            at: sandboxHome.appendingPathComponent("claude-work"),
+            withIntermediateDirectories: true
+        )
+
+        let status = try runConfigureScript(environment: [
+            "CLAUDE_CONFIG_DIR": sandboxHome.appendingPathComponent("claude-work").path,
+        ])
+
+        try assertOurClaudeHooks(in: "claude-work/settings.json")
+        XCTAssertFalse(fileExists(".claude"), "hooks leaked into ~/.claude, which Claude Code does not read")
+        XCTAssertTrue(status.contains("Claude ok (~/claude-work)"), status)
+    }
+
+    func testClaudeConfigDirWithTildeExpandsAgainstRemoteHome() throws {
+        try FileManager.default.createDirectory(
+            at: sandboxHome.appendingPathComponent("claude-work"),
+            withIntermediateDirectories: true
+        )
+
+        try runConfigureScript(environment: ["CLAUDE_CONFIG_DIR": "~/claude-work/"])
+
+        try assertOurClaudeHooks(in: "claude-work/settings.json")
+        XCTAssertFalse(fileExists("~"))
+    }
+
+    /// Unset (or unusable) keeps today's behaviour exactly, status text included.
+    func testClaudeInstallWithoutClaudeConfigDirUsesDotClaude() throws {
+        try FileManager.default.createDirectory(
+            at: sandboxHome.appendingPathComponent(".claude"),
+            withIntermediateDirectories: true
+        )
+
+        let status = try runConfigureScript()
+
+        try assertOurClaudeHooks(in: ".claude/settings.json")
+        XCTAssertTrue(status.hasPrefix("Claude ok · "), status)
+    }
+
+    func testRelativeClaudeConfigDirFallsBackToDotClaude() throws {
+        try FileManager.default.createDirectory(
+            at: sandboxHome.appendingPathComponent(".claude"),
+            withIntermediateDirectories: true
+        )
+
+        let status = try runConfigureScript(environment: ["CLAUDE_CONFIG_DIR": "claude-work"])
+
+        try assertOurClaudeHooks(in: ".claude/settings.json")
+        XCTAssertFalse(fileExists("claude-work"))
+        XCTAssertTrue(status.hasPrefix("Claude ok · "), status)
+    }
+
+    /// The trap from the #270 attempt: Claude Code on PATH but never run with the
+    /// custom dir, so the dir does not exist yet. An early return on the missing
+    /// dir made the `which claude` check unreachable and installed nothing.
+    func testClaudeConfigDirAbsentButClaudeOnPathStillInstalls() throws {
+        try installFakeBinary("claude")
+
+        let status = try runConfigureScript(environment: [
+            "CLAUDE_CONFIG_DIR": sandboxHome.appendingPathComponent("claude-work").path,
+        ])
+
+        try assertOurClaudeHooks(in: "claude-work/settings.json")
+        XCTAssertFalse(fileExists(".claude"))
+        XCTAssertTrue(status.contains("Claude ok (~/claude-work)"), status)
+    }
+
+    /// Same direction without the variable: a fresh host with Claude Code on PATH
+    /// still gets ~/.claude hooks.
+    func testNoConfigDirButClaudeOnPathInstallsIntoDotClaude() throws {
+        try installFakeBinary("claude")
+
+        try runConfigureScript()
+
+        try assertOurClaudeHooks(in: ".claude/settings.json")
+    }
+
+    func testClaudeSkippedWhenNeitherConfigDirNorBinaryExists() throws {
+        let withVar = try runConfigureScript(environment: [
+            "CLAUDE_CONFIG_DIR": sandboxHome.appendingPathComponent("claude-work").path,
+        ])
+        XCTAssertTrue(withVar.hasPrefix("Claude skipped (config dir not found: ~/claude-work) · "), withVar)
+        XCTAssertFalse(fileExists("claude-work"))
+        XCTAssertFalse(fileExists(".claude"))
+
+        let withoutVar = try runConfigureScript()
+        XCTAssertTrue(withoutVar.hasPrefix("Claude skipped · "), withoutVar)
+        XCTAssertFalse(fileExists(".claude"))
+    }
+
+    /// ext4/xfs are byte-preserving: the path must be used exactly as given. A
+    /// decomposed name normalized to NFC (as the macOS-side resolver does) would be
+    /// a different, non-existent directory on Linux. APFS lookups can't observe the
+    /// difference, so compare the bytes the script reports.
+    func testClaudeConfigDirIsNotUnicodeNormalized() throws {
+        let decomposed = "cafe\u{0301}-claude"
+        XCTAssertNotEqual(Array(decomposed.utf8), Array(decomposed.precomposedStringWithCanonicalMapping.utf8))
+        try FileManager.default.createDirectory(
+            at: sandboxHome.appendingPathComponent(decomposed),
+            withIntermediateDirectories: true
+        )
+
+        let status = try runConfigureScript(environment: [
+            "CLAUDE_CONFIG_DIR": sandboxHome.path + "/" + decomposed,
+        ])
+
+        XCTAssertNotNil(
+            Data(status.utf8).range(of: Data("Claude ok (~/\(decomposed))".utf8)),
+            "config dir was not used byte-for-byte: \(status)"
+        )
+    }
+
     // MARK: - Custom CLIs on the remote host (#342)
 
     private func corpCodex(configPath: String) -> CLIConfig {

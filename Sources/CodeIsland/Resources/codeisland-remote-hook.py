@@ -111,12 +111,28 @@ def _normalize_event(name):
     return name
 
 
+def _claude_config_dir():
+    """Claude Code's config dir: $CLAUDE_CONFIG_DIR when set, else ~/.claude (#271).
+
+    The hook runs as a child of Claude Code, so the variable here is the one that
+    Claude Code itself used — authoritative, with no fallback to ~/.claude when it
+    is set. Same rules as _claude_config_dir() in the remote install script, and
+    deliberately NO Unicode normalization: ext4/xfs are byte-preserving, so an
+    NFC-normalized path can name a directory that does not exist.
+    """
+    raw = (os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
+    if raw:
+        expanded = os.path.expanduser(raw)
+        if os.path.isabs(expanded) and expanded.strip("/") != "":
+            return expanded
+    return os.path.join(os.path.expanduser("~"), ".claude")
+
+
 def _claude_jsonl_path(session_id, cwd):
     if not session_id or not cwd:
         return None
-    home = os.path.expanduser("~")
     project_dir = cwd.replace("/", "-").replace(".", "-")
-    path = os.path.join(home, ".claude", "projects", project_dir, f"{session_id}.jsonl")
+    path = os.path.join(_claude_config_dir(), "projects", project_dir, f"{session_id}.jsonl")
     return path if os.path.exists(path) else None
 
 

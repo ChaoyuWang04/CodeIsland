@@ -5262,17 +5262,73 @@ final class AppState {
     /// Grok percent-encodes the full cwd into a single directory component,
     /// including `/` as `%2F` (for example `/Users/me` -> `%2FUsers%2Fme`).
     nonisolated static func grokEncodedCwd(_ cwd: String) -> String? {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
-        return cwd.addingPercentEncoding(withAllowedCharacters: allowed)
+        GrokSessionPaths.encodedCwd(cwd)
     }
 
-    private struct GrokSessionCandidate {
+    struct GrokSessionCandidate {
         let sessionId: String
-        let directory: String
+        /// `sessions/<encoded-cwd>/<id>`; nil when only Grok's search index
+        /// knows the session, so there is no transcript to read or tail.
+        let directory: String?
         let model: String?
         let createdAt: Date?
         let activityAt: Date
+    }
+
+    /// Grok mints UUIDv7 session ids (a client may pass its own with `-s`),
+    /// whose leading 48 bits are the creation time in Unix milliseconds. That
+    /// stands in for `summary.json`'s `created_at` when it is missing, and is
+    /// the only creation time for a session known only to the search index.
+    nonisolated static func grokSessionCreationDate(fromSessionId sessionId: String) -> Date? {
+        guard let uuid = UUID(uuidString: sessionId)?.uuid,
+              uuid.6 >> 4 == 7,
+              uuid.8 & 0xC0 == 0x80 else { return nil }
+        let milliseconds = [uuid.0, uuid.1, uuid.2, uuid.3, uuid.4, uuid.5]
+            .reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+        return Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1000)
+    }
+
+    /// Sessions that Grok's search index (`sessions/session_search.sqlite`,
+    /// table `session_docs`) records for `cwd`, most recently updated first.
+    /// Grok writes the index live in WAL mode, so it is opened read-only
+    /// through SQLite (never `immutable`, which would skip the WAL), and an
+    /// unexpected schema yields no rows rather than a guess.
+    nonisolated static func grokIndexedSessions(
+        databasePath: String,
+        cwd: String,
+        limit: Int = 50
+    ) -> [(sessionId: String, updatedAt: Date)] {
+        withSQLiteDatabase(at: databasePath) { db -> [(sessionId: String, updatedAt: Date)]? in
+            let columns = sqliteTableColumns(db: db, tableName: "session_docs")
+            guard columns.isSuperset(of: ["session_id", "cwd", "updated_at"]),
+                  let statement = prepareSQLiteStatement(
+                    db: db,
+                    sql: """
+                        SELECT session_id, updated_at
+                        FROM session_docs
+                        WHERE cwd = ?
+                        ORDER BY updated_at DESC
+                        LIMIT ?;
+                        """
+                  ) else {
+                return nil
+            }
+            defer { sqlite3_finalize(statement) }
+            bindSQLiteText(cwd, to: statement, index: 1)
+            sqlite3_bind_int(statement, 2, Int32(clamping: limit))
+
+            var rows: [(sessionId: String, updatedAt: Date)] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let sessionId = sqliteColumnString(statement, index: 0),
+                      !sessionId.isEmpty else { continue }
+                let raw = sqlite3_column_int64(statement, 1)
+                guard raw > 0 else { continue }
+                // Schema v4 stores Unix seconds; tolerate milliseconds.
+                let seconds = raw > 100_000_000_000 ? Double(raw) / 1000 : Double(raw)
+                rows.append((sessionId, Date(timeIntervalSince1970: seconds)))
+            }
+            return rows
+        } ?? []
     }
 
     /// Score a metadata session against a live Grok process. Grok's native
@@ -5389,12 +5445,43 @@ final class AppState {
         return Dictionary(uniqueKeysWithValues: sessionByPid.map { ($0.value, $0.key) })
     }
 
-    private nonisolated static func grokSessionCandidates(
+    /// Grok sessions recorded for `cwd`. The per-session directories are
+    /// Grok's session store and carry the transcript; `session_search.sqlite`
+    /// is Grok's search index over sessions and only adds ones without a
+    /// readable directory here (a cwd too long for one path component is
+    /// stored under a slug+hash name, and a machine can hold sessions whose
+    /// directories are gone). Both layouts can coexist on one machine.
+    nonisolated static func grokSessionCandidates(
         cwd: String,
+        sessionsRoot: String = "\(ConfigInstaller.grokHome())/sessions",
+        includeIndex: Bool = true,
         fm: FileManager = .default
     ) -> [GrokSessionCandidate] {
+        var candidates = grokDirectorySessionCandidates(cwd: cwd, sessionsRoot: sessionsRoot, fm: fm)
+        let indexPath = "\(sessionsRoot)/session_search.sqlite"
+        guard includeIndex, fm.fileExists(atPath: indexPath) else { return candidates }
+
+        let known = Set(candidates.map(\.sessionId))
+        for row in grokIndexedSessions(databasePath: indexPath, cwd: cwd)
+        where !known.contains(row.sessionId) {
+            candidates.append(GrokSessionCandidate(
+                sessionId: row.sessionId,
+                directory: nil,
+                model: nil,
+                createdAt: grokSessionCreationDate(fromSessionId: row.sessionId),
+                activityAt: row.updatedAt
+            ))
+        }
+        return candidates
+    }
+
+    private nonisolated static func grokDirectorySessionCandidates(
+        cwd: String,
+        sessionsRoot: String,
+        fm: FileManager
+    ) -> [GrokSessionCandidate] {
         guard let encodedCwd = grokEncodedCwd(cwd) else { return [] }
-        let cwdDirectory = "\(ConfigInstaller.grokHome())/sessions/\(encodedCwd)"
+        let cwdDirectory = "\(sessionsRoot)/\(encodedCwd)"
         guard let sessionDirectories = try? fm.contentsOfDirectory(atPath: cwdDirectory) else { return [] }
 
         var candidates: [GrokSessionCandidate] = []
@@ -5409,6 +5496,7 @@ final class AppState {
 
             let sessionId = (info["id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? directoryName
             let createdAt = (summary["created_at"] as? String).flatMap(parseISO8601Timestamp)
+                ?? grokSessionCreationDate(fromSessionId: sessionId)
             let timestamps = ["last_active_at", "updated_at", "created_at"]
                 .compactMap { summary[$0] as? String }
                 .compactMap(parseISO8601Timestamp)
@@ -5441,7 +5529,8 @@ final class AppState {
         after processStart: Date?,
         fm: FileManager = .default
     ) -> GrokSessionCandidate? {
-        grokSessionCandidates(cwd: cwd, fm: fm)
+        // Model backfill runs on the main actor, and the index has no model.
+        grokSessionCandidates(cwd: cwd, includeIndex: false, fm: fm)
             .filter {
                 grokSessionProcessMatchScore(
                     createdAt: $0.createdAt,
@@ -5473,9 +5562,12 @@ final class AppState {
 
             for candidate in candidates {
                 guard let pid = assignments[candidate.sessionId] else { continue }
-                let chatPath = "\(candidate.directory)/chat_history.jsonl"
-                let hasChat = fm.fileExists(atPath: chatPath)
-                let messages = hasChat ? readRecentFromTranscript(path: chatPath).1 : []
+                // Index-only sessions have no transcript; never point the
+                // tailer at a file that is not there.
+                let chatPath = candidate.directory
+                    .map { "\($0)/chat_history.jsonl" }
+                    .flatMap { fm.fileExists(atPath: $0) ? $0 : nil }
+                let messages = chatPath.map { readRecentFromTranscript(path: $0).1 } ?? []
                 results.append(grokDiscoveredSession(
                     sessionId: candidate.sessionId,
                     cwd: cwd,
@@ -5483,7 +5575,7 @@ final class AppState {
                     pid: pid,
                     modifiedAt: candidate.activityAt,
                     recentMessages: messages,
-                    transcriptPath: hasChat ? chatPath : nil
+                    transcriptPath: chatPath
                 ))
             }
         }

@@ -320,30 +320,33 @@ if json["transcript_path"] == nil, let tp = nonEmptyString(json["transcriptPath"
 
 // Grok's hook payload does not carry a transcript path. Its documented session
 // layout is deterministic, and chat_history.jsonl uses the user/assistant row
-// shapes already understood by CodeIsland's incremental tailer.
+// shapes already understood by CodeIsland's incremental tailer. The path is
+// only forwarded once the file exists (see GrokSessionPaths).
 if isGrokRuntime,
    json["transcript_path"] == nil,
    let sessionId = nonEmptyString(json["session_id"]),
    let cwd = nonEmptyString(json["cwd"]) {
-    var allowed = CharacterSet.alphanumerics
-    allowed.insert(charactersIn: "-._~")
-    if let encodedCwd = cwd.addingPercentEncoding(withAllowedCharacters: allowed) {
-        let rawHome = nonEmptyString(env["GROK_HOME"])
-        let grokHome: String
-        if let rawHome {
-            if rawHome == "~" {
-                grokHome = FileManager.default.homeDirectoryForCurrentUser.path
-            } else if rawHome.hasPrefix("~/") {
-                grokHome = FileManager.default.homeDirectoryForCurrentUser.path
-                    + "/" + rawHome.dropFirst(2)
-            } else {
-                grokHome = rawHome
-            }
+    let rawHome = nonEmptyString(env["GROK_HOME"])
+    let grokHome: String
+    if let rawHome {
+        if rawHome == "~" {
+            grokHome = FileManager.default.homeDirectoryForCurrentUser.path
+        } else if rawHome.hasPrefix("~/") {
+            grokHome = FileManager.default.homeDirectoryForCurrentUser.path
+                + "/" + rawHome.dropFirst(2)
         } else {
-            grokHome = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".grok").path
+            grokHome = rawHome
         }
-        json["transcript_path"] = "\(grokHome)/sessions/\(encodedCwd)/\(sessionId)/chat_history.jsonl"
+    } else {
+        grokHome = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".grok").path
+    }
+    if let path = GrokSessionPaths.existingChatHistoryPath(
+        grokHome: grokHome,
+        cwd: cwd,
+        sessionId: sessionId
+    ) {
+        json["transcript_path"] = path
     }
 }
 

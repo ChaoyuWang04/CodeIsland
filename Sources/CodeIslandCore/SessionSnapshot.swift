@@ -101,6 +101,9 @@ public struct SessionSnapshot: Sendable {
     public var startTime: Date = Date()
     public var lastUserPrompt: String?
     public var lastAssistantMessage: String?
+    /// Public assistant text emitted during the active Codex turn. This is
+    /// transient UI state: a new turn clears it while chat history remains.
+    public var liveCodexOutput: String?
     /// Absolute path to the JSONL transcript currently backing this session. Populated
     /// by hooks (`transcript_path` field) and by filesystem discovery, consumed by the
     /// JSONLTailer for incremental streaming of the latest assistant reply.
@@ -980,6 +983,24 @@ public func reduceEvent(
         return effects
     }
 
+    // Codex may flush already queued tool hooks after an Interrupt. Keep the
+    // terminal state latched until a new prompt/session starts so stale work
+    // cannot revive the card as processing.
+    //
+    // SubagentStop still passes: interrupting the root turn does not stop
+    // spawned agents, and dropping their stop would leave them in `subagents`
+    // so the next root Stop sees "active subagents" and pins the card to
+    // running/Agent. Removing a subagent never revives an idle parent.
+    if sessions[sessionId]?.source == "codex",
+       sessions[sessionId]?.interrupted == true,
+       eventName != "SessionStart",
+       eventName != "UserPromptSubmit",
+       eventName != "SessionEnd",
+       eventName != "SubagentStop",
+       eventName != "Interrupt" {
+        return effects
+    }
+
     // Route subagent-specific events
     if let agentId = event.agentId {
         let handled = handleSubagentEvent(
@@ -994,6 +1015,20 @@ public func reduceEvent(
         if handled { return effects }
     }
 
+    // Remote Codex hooks can enrich ordinary lifecycle events with the latest
+    // public assistant text because their transcript path is not readable on
+    // this Mac. Apply it only after stale/interrupted and subagent events have
+    // been filtered, and keep it separate from persisted chat history.
+    if sessions[sessionId]?.source == "codex",
+       eventName != "UserPromptSubmit",
+       eventName != "SessionStart",
+       let output = event.rawJSON["last_assistant_message"] as? String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            sessions[sessionId]?.liveCodexOutput = trimmed
+        }
+    }
+
     // Preserve actionable states: don't let activity updates overwrite waiting states
     let isWaiting = sessions[sessionId]?.status == .waitingApproval
         || sessions[sessionId]?.status == .waitingQuestion
@@ -1003,6 +1038,9 @@ public func reduceEvent(
     case "UserPromptSubmit":
         sessions[sessionId]?.interrupted = false
         sessions[sessionId]?.taskRoundEnded = false
+        if sessions[sessionId]?.source == "codex" {
+            sessions[sessionId]?.liveCodexOutput = nil
+        }
         sessions[sessionId]?.status = .processing
         sessions[sessionId]?.currentTool = nil
         sessions[sessionId]?.toolDescription = nil
@@ -1032,7 +1070,7 @@ public func reduceEvent(
     case "PreToolUse":
         if !isWaiting {
             sessions[sessionId]?.status = .running
-            sessions[sessionId]?.currentTool = event.toolName
+            sessions[sessionId]?.currentTool = event.activityLabel
             sessions[sessionId]?.toolDescription = event.toolDescription
         }
     case "PostToolUse":
@@ -1335,7 +1373,22 @@ public func reduceEvent(
         }
     case "PreCompact":
         sessions[sessionId]?.status = .processing
+        if sessions[sessionId]?.source == "codex" {
+            sessions[sessionId]?.currentTool = "Compacting"
+        }
         sessions[sessionId]?.toolDescription = "Compacting context\u{2026}"
+    case "PostCompact":
+        if !isWaiting {
+            sessions[sessionId]?.status = .processing
+            sessions[sessionId]?.currentTool = nil
+            sessions[sessionId]?.toolDescription = nil
+        }
+    case "Interrupt":
+        sessions[sessionId]?.interrupted = true
+        sessions[sessionId]?.status = .idle
+        sessions[sessionId]?.currentTool = nil
+        sessions[sessionId]?.toolDescription = nil
+        effects.append(.enqueueCompletion(sessionId: sessionId))
     default:
         break
     }
@@ -1506,6 +1559,13 @@ private func shouldReopenCursorSubagentOnPrompt(event: HookEvent, session: Sessi
         ?? SessionSnapshot.normalizedSupportedSource(event.rawJSON["source"] as? String)
         ?? session?.source
     return source == "cursor" || source == "cursor-cli"
+}
+
+/// Whether a subagent-routed event comes from Codex (native child threads).
+private func isCodexSubagentEvent(_ event: HookEvent, session: SessionSnapshot?) -> Bool {
+    let source = SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String)
+        ?? session?.source
+    return source == "codex"
 }
 
 /// Whether folded-child prompt/response text should appear on the parent card.
@@ -1848,7 +1908,17 @@ private func handleSubagentEvent(
 
     case "SubagentStop", "Stop", "SessionEnd":
         sessions[sessionId]?.subagents.removeValue(forKey: agentId)
-        sessions[sessionId]?.recordClosedSubagentId(agentId)
+        // Codex fires SubagentStop at the end of every child *turn*, and its
+        // agent_id is the child's thread id, reused for follow-up turns sent
+        // via send_message / followup_task without a new SubagentStart. A
+        // tombstone here would drop those turns' hooks (ensureSubagent) and
+        // auto-deny their PermissionRequests (shouldSuppressClosedSubagentUI).
+        // Removing the entry is enough: Codex awaits each hook in order, so no
+        // stale tool hook can trail the stop, and the next turn's hooks
+        // recreate the entry.
+        if !(eventName == "SubagentStop" && isCodexSubagentEvent(event, session: sessions[sessionId])) {
+            sessions[sessionId]?.recordClosedSubagentId(agentId)
+        }
         // If no more subagents, revert parent to processing (waiting for main thread to continue)
         if sessions[sessionId]?.subagents.isEmpty == true {
             if sessions[sessionId]?.status == .running && sessions[sessionId]?.currentTool == "Agent" {
@@ -1865,7 +1935,7 @@ private func handleSubagentEvent(
             return true
         }
         sessions[sessionId]?.subagents[agentId]?.status = .running
-        sessions[sessionId]?.subagents[agentId]?.currentTool = event.toolName
+        sessions[sessionId]?.subagents[agentId]?.currentTool = event.activityLabel
         sessions[sessionId]?.subagents[agentId]?.toolDescription = event.toolDescription
         sessions[sessionId]?.subagents[agentId]?.lastActivity = Date()
         // Keep parent session showing as active while subagents work

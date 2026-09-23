@@ -650,12 +650,32 @@ private struct CompactRightWing: View {
 /// Accent color for each tool category — shared between notch and non-notch views
 private func toolStatusColor(_ tool: String) -> Color {
     switch tool.lowercased() {
-    case "bash": return Color(red: 0.4, green: 1.0, blue: 0.5)
-    case "edit", "write": return Color(red: 0.5, green: 0.7, blue: 1.0)
-    case "read": return Color(red: 0.9, green: 0.8, blue: 0.4)
-    case "grep", "glob": return Color(red: 0.8, green: 0.6, blue: 1.0)
-    case "agent": return Color(red: 1.0, green: 0.6, blue: 0.4)
+    case "bash", "running command": return Color(red: 0.4, green: 1.0, blue: 0.5)
+    case "edit", "write", "editing": return Color(red: 0.5, green: 0.7, blue: 1.0)
+    case "read", "reading": return Color(red: 0.9, green: 0.8, blue: 0.4)
+    case "grep", "glob", "searching", "calling mcp": return Color(red: 0.8, green: 0.6, blue: 1.0)
+    case "agent", "delegating": return Color(red: 1.0, green: 0.6, blue: 0.4)
+    case "compacting": return Color(red: 0.4, green: 0.85, blue: 0.9)
     default: return .white.opacity(0.7)
+    }
+}
+
+enum SessionLiveOutputDisplay {
+    static func summary(for session: SessionSnapshot?, maxCharacters: Int = 160) -> String? {
+        guard maxCharacters > 0,
+              let session,
+              session.status != .idle,
+              SessionSnapshot.normalizedSupportedSource(session.source) == "codex",
+              let liveOutput = session.liveCodexOutput else { return nil }
+
+        let normalized = liveOutput
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        guard !normalized.isEmpty else { return nil }
+        guard normalized.count > maxCharacters else { return normalized }
+        if maxCharacters == 1 { return "\u{2026}" }
+        return String(normalized.prefix(maxCharacters - 1)) + "\u{2026}"
     }
 }
 
@@ -676,6 +696,7 @@ private struct CompactToolStatus: View {
     }
     private var liveTool: String? { displaySession?.currentTool }
     private var liveDesc: String? { displaySession?.toolDescription }
+    private var liveOutput: String? { SessionLiveOutputDisplay.summary(for: displaySession) }
     private var displayStatus: AgentStatus { displaySession?.status ?? .idle }
     private var projectName: String? {
         guard let cwd = displaySession?.cwd, !cwd.isEmpty else { return nil }
@@ -721,6 +742,17 @@ private struct CompactToolStatus: View {
                     )
                     .truncationMode(.tail)
                 }
+            } else if let liveOutput {
+                Text("$")
+                    .fontWeight(.bold)
+                    .foregroundStyle(Color(red: 0.85, green: 0.47, blue: 0.34))
+                MorphText(
+                    text: liveOutput,
+                    font: .system(size: 11, weight: .medium, design: .monospaced),
+                    color: .white.opacity(0.78)
+                )
+                .truncationMode(.tail)
+                .help(liveOutput)
             } else if displayStatus == .processing {
                 TypingIndicator(fontSize: 11, label: "thinking", bright: true)
                     .id("thinking-\(appState.rotatingSessionId ?? "")")
@@ -2416,7 +2448,9 @@ private struct SessionCard: View {
 
                 // Inline approval controls (when user keeps panel in session list)
                 if session.status == .waitingApproval, let idx = approvalQueueIndex {
-                    let tool = session.currentTool ?? (appState.permissionQueue[idx].event.toolName ?? "Unknown")
+                    // Approval details require the provider's raw tool name; the
+                    // session itself may hold a friendly Codex activity label.
+                    let tool = appState.permissionQueue[idx].event.toolName ?? session.currentTool ?? "Unknown"
                     let input = appState.permissionQueue[idx].event.toolInput
                     HStack(spacing: 8) {
                         Text(String(format: L10n.shared["approval_queue_label"], idx + 1, appState.permissionQueue.count, tool))

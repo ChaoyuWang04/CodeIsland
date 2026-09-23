@@ -158,6 +158,29 @@ def _codebuddy_jsonl_path(session_id, cwd):
     return path if os.path.exists(path) else None
 
 
+def _extract_text(content):
+    """Mirror of the Mac-side JSONLTailer.extractText: a bare string (minus any
+    <USER_REQUEST> wrapper), or every `text` block of a content array joined by
+    newlines. tool_use / tool_result / thinking blocks carry no chat text."""
+    if isinstance(content, str):
+        text = content
+        start = text.find("<USER_REQUEST>")
+        if start != -1:
+            end = text.find("</USER_REQUEST>", start + len("<USER_REQUEST>"))
+            if end != -1:
+                text = text[start + len("<USER_REQUEST>"):end]
+        return text.strip() or None
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                text = block["text"].strip()
+                if text:
+                    parts.append(text)
+        return "\n".join(parts) if parts else None
+    return None
+
+
 def _scan_session_jsonl(path):
     if not path:
         return {}
@@ -177,21 +200,44 @@ def _scan_session_jsonl(path):
                     payload = json.loads(line)
                 except Exception:
                     continue
-
-                msg_type = payload.get("type")
-                role = payload.get("role")
-                content = payload.get("content")
-                if not isinstance(content, str) or not content.strip():
+                # isMeta rows (local-command caveats etc.) are not chat — the Mac
+                # side skips them too.
+                if not isinstance(payload, dict) or payload.get("isMeta") is True:
                     continue
 
-                if msg_type == "summary" and not summary:
-                    summary = content
-                if role == "user":
-                    if not first_user:
+                # Current Claude Code (and Qoder) rows nest the chat message:
+                # {"type":"assistant","message":{"role":"assistant","content":[...]}}.
+                # The older top-level {"role":..,"content":".."} shape stays as the
+                # fallback. Same resolution as the Mac-side Claude transcript reader.
+                msg_type = payload.get("type")
+                message = payload.get("message")
+                nested = isinstance(message, dict)
+                if not nested:
+                    message = payload
+                role = message.get("role") or msg_type
+                role = role.lower() if isinstance(role, str) else None
+                content = message.get("content")
+
+                if not nested and isinstance(content, str) and content.strip():
+                    # Legacy shape only, unchanged: its summary / first prompt
+                    # titles the session. Nested Claude rows never do — the Mac
+                    # titles Claude sessions from custom-title / ai-title records,
+                    # never from the first prompt.
+                    if msg_type == "summary" and not summary:
+                        summary = content
+                    if role == "user" and not first_user:
                         first_user = content
-                    last_user = content
+
+                if role == "user":
+                    text = _extract_text(content)
+                    if text:
+                        last_user = text
                 elif role == "assistant":
-                    last_assistant = content
+                    text = _extract_text(content)
+                    if not text and isinstance(message.get("thinking"), str):
+                        text = message["thinking"].strip() or None
+                    if text:
+                        last_assistant = text
     except Exception:
         return {}
 

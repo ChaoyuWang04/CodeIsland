@@ -24,8 +24,9 @@ enum HookFormat {
     case nested
     /// Cursor style: [{command: "..."}]
     case flat
-    /// Trae IDE / Trae CN style:
+    /// Trae IDE / Trae CN (TraeCode desktop) style:
     /// {version, hooks: {event: [{matcher, loop_limit, hooks: [{type, command, timeout}]}]}}
+    /// with Claude-style PascalCase event names.
     case traeIDE
     /// TraeCli style: YAML managed block in ~/.trae/traecli.yaml
     case traecli
@@ -683,19 +684,20 @@ struct ConfigInstaller {
                 ("stop", 5, false),
             ]
         case .traeIDE:
-            // Trae CN was observed to fire these events for the main session: UserPromptSubmit, PreToolUse, PostToolUse, Stop, Notification.
-            // Other Claude-style events will not be triggered for now; they are retained.
+            // TraeCode (Trae / Trae CN desktop) fires exactly these six
+            // Claude-style events; both editions document the same list
+            // (docs.trae.ai/ide/hook-configuration-reference,
+            // docs.trae.cn/ide_hook-configuration-reference). The Cursor-style
+            // camelCase names we used to share with `.flat` never fire there.
+            // Notification runs async and TRAE ignores its stdout, so it gets
+            // the same short timeout as the status events.
             return [
-                ("UserPromptSubmit", 5, true),
-                ("PreToolUse", 5, false),
-                ("PostToolUse", 5, true),
                 ("SessionStart", 5, false),
-                ("SessionEnd", 5, true),
-                ("Stop", 5, true),
-                ("SubagentStart", 5, true),
-                ("SubagentStop", 5, true),
-                ("Notification", 86400, false),
-                ("PreCompact", 5, true),
+                ("UserPromptSubmit", 5, false),
+                ("PreToolUse", 5, false),
+                ("PostToolUse", 5, false),
+                ("Stop", 5, false),
+                ("Notification", 5, false),
             ]
         case .traecli:
             return [
@@ -1611,9 +1613,12 @@ struct ConfigInstaller {
 
         let root = parseJSONFile(at: cli.fullPath, fm: fm) ?? [:]
         var hooks = root[cli.configKey] as? [String: Any] ?? [:]
-        if cli.source == "traecli-next" {
-            // Clean up CodeIsland-managed entries written with the old Trae IDE
-            // event names (for example beforeReadFile) at the new Trae CLI path.
+        if cli.source == "traecli-next" || cli.format == .traeIDE {
+            // Clean up CodeIsland-managed entries written with the old
+            // Cursor-style event names (beforeReadFile, stop, …): Trae CLI Next
+            // rejects them, and TraeCode never fires them. The loop below only
+            // replaces entries under the current event names, so without this
+            // an upgraded install would keep the dead keys forever.
             hooks = removeManagedHookEntries(from: hooks)
         }
         // Quote the path in case home directory contains spaces or special characters

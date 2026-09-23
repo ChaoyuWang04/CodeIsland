@@ -231,6 +231,7 @@ struct NotchPanelView: View {
                                 options: q.question.options,
                                 descriptions: q.question.descriptions,
                                 allQuestions: q.askUserQuestionState?.items ?? [],
+                                requestId: q.id,
                                 sessionSource: session?.source,
                                 sessionContext: session?.cwd,
                                 session: session,
@@ -242,6 +243,12 @@ struct NotchPanelView: View {
                                 onAnswerMulti: { appState.answerQuestionMulti($0, expectedSessionId: sid) },
                                 onSkip: { appState.skipQuestion(expectedSessionId: sid) }
                             )
+                            // One view per request. Answering a card promotes the
+                            // next session's request into this same slot, and
+                            // without a new identity SwiftUI hands it the previous
+                            // card's @State — answers, selection and typed text
+                            // included. (#333)
+                            .id(q.id)
                             .transition(.blurFade.combined(with: .scale(scale: 0.96, anchor: .top)))
                         } else if let preview = appState.previewQuestionPayload {
                             QuestionBar(
@@ -249,6 +256,7 @@ struct NotchPanelView: View {
                                 options: preview.options,
                                 descriptions: preview.descriptions,
                                 allQuestions: [],
+                                requestId: nil,
                                 sessionSource: session?.source,
                                 sessionContext: session?.cwd,
                                 session: session,
@@ -1175,12 +1183,82 @@ func makeQuestionBarFreeTextAnswer(
     )
 }
 
+/// Answer state of one question card: which question of the wizard is up,
+/// the answers given so far, and the in-progress selection or text.
+///
+/// It belongs to one `QuestionRequest`. SwiftUI keeps a view's `@State` for
+/// as long as the view keeps its identity, and the card slot keeps its
+/// identity when one request replaces another in place — answering session
+/// A's card promotes session B's straight into the same `QuestionBar`. The
+/// answers collected for A then led B's submission, and since answers are
+/// mapped onto questions by position, B's question was sent A's answer.
+/// Recording against a different request therefore starts over. (#333)
+struct QuestionWizardState {
+    private(set) var requestId: UUID?
+    private(set) var currentQuestionIndex = 0
+    private(set) var collectedAnswers: [AskUserQuestionAnswer] = []
+    var selectedIndex: Int?
+    var selectedIndices: Set<Int> = []
+    var showOtherInput = false
+    var otherText = ""
+    var textInput = ""
+
+    init(requestId: UUID? = nil) {
+        self.requestId = requestId
+    }
+
+    /// Drop everything collected for any other request.
+    mutating func bind(to requestId: UUID?) {
+        guard self.requestId != requestId else { return }
+        self = QuestionWizardState(requestId: requestId)
+    }
+
+    /// Record the answer to the current question of the request `requestId`,
+    /// which asks `questionCount` questions. Returns the submission — one
+    /// answer per question, all given on that request — once the last one is
+    /// answered, and nil while more remain.
+    ///
+    /// The final answer is not kept: if the submission is refused, answering
+    /// again must not append a second copy.
+    mutating func record(
+        _ answer: AskUserQuestionAnswer,
+        for requestId: UUID?,
+        questionCount: Int
+    ) -> [AskUserQuestionAnswer]? {
+        bind(to: requestId)
+        guard currentQuestionIndex + 1 < questionCount else {
+            return collectedAnswers + [answer]
+        }
+        collectedAnswers.append(answer)
+        currentQuestionIndex += 1
+        resetInput()
+        return nil
+    }
+
+    mutating func goBack() {
+        guard currentQuestionIndex > 0, !collectedAnswers.isEmpty else { return }
+        collectedAnswers.removeLast()
+        currentQuestionIndex -= 1
+        resetInput()
+    }
+
+    mutating func resetInput() {
+        selectedIndex = nil
+        selectedIndices = []
+        showOtherInput = false
+        otherText = ""
+        textInput = ""
+    }
+}
+
 private struct QuestionBar: View {
     let question: String
     let options: [String]?
     let descriptions: [String]?
     /// All AskUserQuestion items (1-4). Empty for legacy Notification questions.
     let allQuestions: [AskUserQuestionItem]
+    /// The `QuestionRequest` this card answers; nil for the debug preview.
+    let requestId: UUID?
     let sessionSource: String?
     let sessionContext: String?
     /// Owning session, so the card can focus its terminal on click the same way
@@ -1195,9 +1273,7 @@ private struct QuestionBar: View {
     let onAnswerMulti: ([AskUserQuestionAnswer]) -> Void
     let onSkip: () -> Void
 
-    @State private var textInput = ""
     @FocusState private var isFocused: Bool
-    @State private var selectedIndex: Int? = nil
 
     // Click-to-jump state, mirroring ApprovalBar
     @State private var failureShakeOffset: CGFloat = 0
@@ -1205,19 +1281,15 @@ private struct QuestionBar: View {
     @State private var jumpRowHovering = false
     @AppStorage(SettingsKey.autoCollapseAfterSessionJump) private var autoCollapseAfterSessionJump = SettingsDefaults.autoCollapseAfterSessionJump
 
-    // Multi-question wizard state
-    @State private var currentQuestionIndex: Int = 0
-    @State private var collectedAnswers: [AskUserQuestionAnswer] = []
-    @State private var selectedIndices: Set<Int> = []
-    @State private var showOtherInput: Bool = false
-    @State private var otherText: String = ""
+    // Multi-question wizard state, bound to `requestId` (#333)
+    @State private var wizard = QuestionWizardState()
     @FocusState private var otherFocused: Bool
 
     private let cyan = Color(red: 0.4, green: 0.7, blue: 1.0)
 
     private var currentItem: AskUserQuestionItem? {
-        guard !allQuestions.isEmpty, currentQuestionIndex < allQuestions.count else { return nil }
-        return allQuestions[currentQuestionIndex]
+        guard !allQuestions.isEmpty, wizard.currentQuestionIndex < allQuestions.count else { return nil }
+        return allQuestions[wizard.currentQuestionIndex]
     }
 
     /// Remote sessions run on another machine — there is no local terminal to
@@ -1243,6 +1315,11 @@ private struct QuestionBar: View {
         .padding(.vertical, 10)
         .offset(x: failureShakeOffset)
         .onAppear { isFocused = true }
+        .onChange(of: requestId, initial: true) { _, newId in
+            // The caller keys this view by request, so a new request normally
+            // gets a fresh view; this keeps the wizard honest if it does not.
+            wizard.bind(to: newId)
+        }
         .onDisappear {
             jumpValidationTask?.cancel()
             jumpValidationTask = nil
@@ -1330,7 +1407,7 @@ private struct QuestionBar: View {
                 .lineLimit(3)
             Spacer()
             if allQuestions.count > 1 {
-                Text("\(currentQuestionIndex + 1)/\(allQuestions.count)")
+                Text("\(wizard.currentQuestionIndex + 1)/\(allQuestions.count)")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.white.opacity(0.5))
                     .padding(.horizontal, 4)
@@ -1353,18 +1430,18 @@ private struct QuestionBar: View {
                     let desc = item.payload.descriptions?.indices.contains(idx) == true ? item.payload.descriptions?[idx] : nil
                     if item.multiSelect {
                         MultiSelectRow(index: idx + 1, label: option, description: desc,
-                                       isChecked: selectedIndices.contains(idx), accent: cyan) {
-                            if selectedIndices.contains(idx) {
-                                selectedIndices.remove(idx)
+                                       isChecked: wizard.selectedIndices.contains(idx), accent: cyan) {
+                            if wizard.selectedIndices.contains(idx) {
+                                wizard.selectedIndices.remove(idx)
                             } else {
-                                selectedIndices.insert(idx)
+                                wizard.selectedIndices.insert(idx)
                             }
                         }
                     } else {
                         OptionRow(index: idx + 1, label: option, description: desc,
-                                  isSelected: selectedIndex == idx, accent: cyan) {
-                            selectedIndex = idx
-                            showOtherInput = false
+                                  isSelected: wizard.selectedIndex == idx, accent: cyan) {
+                            wizard.selectedIndex = idx
+                            wizard.showOtherInput = false
                             advanceWithAnswer(option, selectedOptions: [option])
                         }
                     }
@@ -1374,19 +1451,19 @@ private struct QuestionBar: View {
                 otherOptionRow(isMultiSelect: item.multiSelect)
 
                 // "Other" text input
-                if showOtherInput {
+                if wizard.showOtherInput {
                     HStack(spacing: 6) {
                         Text(">")
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
                             .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
-                        TextField(L10n.shared["type_answer"], text: $otherText)
+                        TextField(L10n.shared["type_answer"], text: $wizard.otherText)
                             .textFieldStyle(.plain)
                             .font(.system(size: 10.5))
                             .foregroundStyle(.white)
                             .focused($otherFocused)
                             .onSubmit {
-                                if !item.multiSelect && !otherText.isEmpty {
-                                    advanceWithAnswer(otherText, customInput: otherText)
+                                if !item.multiSelect && !wizard.otherText.isEmpty {
+                                    advanceWithAnswer(wizard.otherText, customInput: wizard.otherText)
                                 }
                             }
                     }
@@ -1409,7 +1486,7 @@ private struct QuestionBar: View {
                 Text(">")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
-                TextField(L10n.shared["type_answer"], text: $textInput)
+                TextField(L10n.shared["type_answer"], text: $wizard.textInput)
                     .textFieldStyle(.plain)
                     .font(.system(size: 10.5))
                     .foregroundStyle(.white)
@@ -1429,7 +1506,7 @@ private struct QuestionBar: View {
 
         // Buttons
         HStack(spacing: 6) {
-            if currentQuestionIndex > 0 {
+            if wizard.currentQuestionIndex > 0 {
                 PixelButton(
                     label: L10n.shared["back"],
                     fg: .white.opacity(0.6),
@@ -1461,13 +1538,13 @@ private struct QuestionBar: View {
                     border: Color(red: 0.28, green: 0.62, blue: 0.32),
                     action: confirmMultiSelect
                 )
-            } else if showOtherInput && !item.multiSelect {
+            } else if wizard.showOtherInput && !item.multiSelect {
                 PixelButton(
                     label: L10n.shared["submit"],
                     fg: .white.opacity(0.95),
                     bg: Color(red: 0.16, green: 0.38, blue: 0.18),
                     border: Color(red: 0.28, green: 0.62, blue: 0.32),
-                    action: { if !otherText.isEmpty { advanceWithAnswer(otherText, customInput: otherText) } }
+                    action: { if !wizard.otherText.isEmpty { advanceWithAnswer(wizard.otherText, customInput: wizard.otherText) } }
                 )
             }
         }
@@ -1480,15 +1557,15 @@ private struct QuestionBar: View {
     private func otherOptionRow(isMultiSelect: Bool) -> some View {
         if isMultiSelect {
             MultiSelectRow(index: -1, label: L10n.shared["other"], description: nil,
-                           isChecked: showOtherInput, accent: cyan) {
-                showOtherInput.toggle()
-                if !showOtherInput { otherText = "" }
+                           isChecked: wizard.showOtherInput, accent: cyan) {
+                wizard.showOtherInput.toggle()
+                if !wizard.showOtherInput { wizard.otherText = "" }
             }
         } else {
             OptionRow(index: -1, label: L10n.shared["other"], description: nil,
-                      isSelected: showOtherInput, accent: cyan) {
-                showOtherInput = true
-                selectedIndex = nil
+                      isSelected: wizard.showOtherInput, accent: cyan) {
+                wizard.showOtherInput = true
+                wizard.selectedIndex = nil
             }
         }
     }
@@ -1499,7 +1576,7 @@ private struct QuestionBar: View {
         guard let item = currentItem,
               let answer = makeQuestionBarFreeTextAnswer(
                   question: item.payload.question,
-                  text: textInput
+                  text: wizard.textInput
               ) else { return }
         advance(with: answer)
     }
@@ -1519,24 +1596,23 @@ private struct QuestionBar: View {
     }
 
     private func advance(with answer: AskUserQuestionAnswer) {
-        collectedAnswers.append(answer)
-
-        if currentQuestionIndex + 1 < allQuestions.count {
-            withAnimation(NotchAnimation.micro) {
-                currentQuestionIndex += 1
-                resetQuestionState()
-            }
+        var next = wizard
+        if let submission = next.record(answer, for: requestId, questionCount: allQuestions.count) {
+            wizard = next
+            onAnswerMulti(submission)
         } else {
-            onAnswerMulti(collectedAnswers)
+            withAnimation(NotchAnimation.micro) {
+                wizard = next
+            }
         }
     }
 
     private func confirmMultiSelect() {
         guard let item = currentItem, let opts = item.payload.options else { return }
-        let selectedOptions = selectedIndices.sorted().compactMap { idx in
+        let selectedOptions = wizard.selectedIndices.sorted().compactMap { idx in
             opts.indices.contains(idx) ? opts[idx] : nil
         }
-        let customInput = showOtherInput && !otherText.isEmpty ? otherText : nil
+        let customInput = wizard.showOtherInput && !wizard.otherText.isEmpty ? wizard.otherText : nil
         let parts = selectedOptions + (customInput.map { [$0] } ?? [])
         guard !parts.isEmpty else { return }
         advanceWithAnswer(
@@ -1547,20 +1623,9 @@ private struct QuestionBar: View {
     }
 
     private func goBack() {
-        guard currentQuestionIndex > 0, !collectedAnswers.isEmpty else { return }
-        collectedAnswers.removeLast()
         withAnimation(NotchAnimation.micro) {
-            currentQuestionIndex -= 1
-            resetQuestionState()
+            wizard.goBack()
         }
-    }
-
-    private func resetQuestionState() {
-        selectedIndex = nil
-        selectedIndices = []
-        showOtherInput = false
-        otherText = ""
-        textInput = ""
     }
 
     // MARK: - Legacy single-question content (Notification-based)
@@ -1592,8 +1657,8 @@ private struct QuestionBar: View {
             VStack(spacing: 4) {
                 ForEach(Array(options.enumerated()), id: \.offset) { idx, option in
                     let desc = descriptions?.indices.contains(idx) == true ? descriptions?[idx] : nil
-                    OptionRow(index: idx + 1, label: option, description: desc, isSelected: selectedIndex == idx, accent: cyan) {
-                        selectedIndex = idx
+                    OptionRow(index: idx + 1, label: option, description: desc, isSelected: wizard.selectedIndex == idx, accent: cyan) {
+                        wizard.selectedIndex = idx
                         onAnswer(option)
                     }
                 }
@@ -1604,13 +1669,13 @@ private struct QuestionBar: View {
                 Text(">")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
-                TextField(L10n.shared["type_answer"], text: $textInput)
+                TextField(L10n.shared["type_answer"], text: $wizard.textInput)
                     .textFieldStyle(.plain)
                     .font(.system(size: 10.5))
                     .foregroundStyle(.white)
                     .focused($isFocused)
                     .onSubmit {
-                        if !textInput.isEmpty { onAnswer(textInput) }
+                        if !wizard.textInput.isEmpty { onAnswer(wizard.textInput) }
                     }
             }
             .padding(.horizontal, 10)
@@ -1638,7 +1703,7 @@ private struct QuestionBar: View {
                     fg: .white.opacity(0.95),
                     bg: Color(red: 0.16, green: 0.38, blue: 0.18),
                     border: Color(red: 0.28, green: 0.62, blue: 0.32),
-                    action: { if !textInput.isEmpty { onAnswer(textInput) } }
+                    action: { if !wizard.textInput.isEmpty { onAnswer(wizard.textInput) } }
                 )
             }
         }

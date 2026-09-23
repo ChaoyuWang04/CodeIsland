@@ -2274,6 +2274,18 @@ final class AppState {
             }
             return
         }
+        // Wizard answers are mapped onto items by position below. A set that
+        // is not exactly one answer per this request's questions was collected
+        // for some other request — delivering it would answer this CLI's
+        // question with another session's answer — so it is refused and the
+        // request stays waiting. (#333)
+        if let askState = questionQueue[index].askUserQuestionState,
+           !askState.accepts(answers) {
+            let sessionId = questionQueue[index].event.sessionId ?? "default"
+            log.notice("⚠️ refused answers for session=\(sessionId, privacy: .public) — \(answers.count, privacy: .public) answer(s) do not match its \(askState.items.count, privacy: .public) question(s)")
+            refreshDerivedState()
+            return
+        }
         // Codex app-server questions reply over the JSON-RPC client, not a hook.
         if questionQueue[index].isCodexAppServer {
             let pending = questionQueue.remove(at: index)

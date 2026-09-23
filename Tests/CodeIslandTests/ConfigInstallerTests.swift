@@ -1047,7 +1047,8 @@ hooks:
 
     func testRemoteInstallerConfigureScriptSkipsUnsupportedCustomFormat() {
         // #192: flat (Cursor-style) hooks need a --event flag the remote hook can't
-        // supply, so they are skipped remotely — the list must come out empty.
+        // supply, so they are skipped remotely — the install list must come out
+        // empty. #342: the name is still passed along so the status line can say so.
         let host = RemoteHost(id: "host-1", name: "devbox", host: "example.com")
         let flat = CLIConfig(
             name: "CursorLike", source: "cursorlike",
@@ -1060,6 +1061,7 @@ hooks:
 
         XCTAssertFalse(script.contains("cursorlike"))
         XCTAssertTrue(script.contains("custom_clis = []"))
+        XCTAssertTrue(script.contains(#"unsupported_custom_clis = ["CursorLike"]"#))
     }
 
     func testRemoteInstallerConfigureScriptWithNoCustomCLIsIsEmptyList() {

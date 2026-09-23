@@ -232,10 +232,15 @@ private struct RemoteHostRow: View {
                 .foregroundStyle(.secondary)
 
             if let message = remoteManager.lastMessage[host.id], !message.isEmpty {
+                // Per-CLI install results end with the custom CLIs, whose skip reason
+                // (e.g. the config dir that was not found) is the actionable part —
+                // two lines truncated it away (#342). Selectable so the path can be copied.
                 Text(message)
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
-                    .lineLimit(2)
+                    .lineLimit(5)
+                    .textSelection(.enabled)
+                    .help(message)
             }
 
             // Editable per-host session scope (#240) — saved on submit / focus loss.

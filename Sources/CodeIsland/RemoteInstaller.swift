@@ -138,6 +138,10 @@ print(target)
         let opencodePluginVersion = pythonStringLiteral(remoteOpencodePluginVersion)
         let socketPath = pythonStringLiteral(remoteSocketPath ?? host.remoteSocketPath)
         let customCLIsLiteral = remoteCustomCLIsLiteral(customCLIs)
+        let unsupportedCustomCLIsLiteral = "[" + customCLIs
+            .filter { !isRemoteSupportedCustomFormat($0.format) }
+            .map { pythonStringLiteral($0.name) }
+            .joined(separator: ", ") + "]"
         return """
 import json
 import pathlib
@@ -153,6 +157,7 @@ version = \(version)
 opencode_plugin_version = \(opencodePluginVersion)
 socket_path = \(socketPath)
 custom_clis = \(customCLIsLiteral)
+unsupported_custom_clis = \(unsupportedCustomCLIsLiteral)
 
 def _codex_home():
     raw = (os.environ.get("CODEX_HOME") or "").strip()
@@ -160,6 +165,15 @@ def _codex_home():
         return home / ".codex"
     expanded = os.path.expanduser(raw)
     return pathlib.Path(expanded)
+
+def _display_path(path):
+    # Remote-home-relative form for the status line, so a skip reason names the
+    # exact directory that was checked on the remote host.
+    try:
+        rel = str(path.relative_to(home))
+    except ValueError:
+        return str(path)
+    return "~" if rel == "." else "~/" + rel
 
 def ensure_json(path):
     if path.exists():
@@ -918,9 +932,12 @@ def install_custom():
     results = []
     for cli in custom_clis:
         source = cli["source"]
+        # config_path arrives home-relative (or absolute) — the Mac side already
+        # stripped `~/` and its own home prefix so this resolves against the REMOTE
+        # $HOME (#342).
         config_path = home / cli["config_path"]
         if not config_path.parent.exists() and shutil.which(source) is None:
-            results.append(cli["name"] + " skipped")
+            results.append(cli["name"] + " skipped (config dir not found: " + _display_path(config_path.parent) + ")")
             continue
         data = ensure_json(config_path)
         if not isinstance(data, dict):
@@ -940,6 +957,8 @@ def install_custom():
         data[cli["config_key"]] = hooks
         write_json(config_path, data)
         results.append(cli["name"] + " ok")
+    for name in unsupported_custom_clis:
+        results.append(name + " skipped (template not supported remotely)")
     return results
 
 parts = [install_claude(), install_qoder(), install_hermes(), install_codex(), install_codebuddy(), install_traecli(), install_opencode()] + install_custom()
@@ -1007,12 +1026,39 @@ print(" · ".join(parts))
         return args
     }
 
-    /// Serialize custom CLI configs into a Python list literal for the remote install
-    /// script. Only `.claude` / `.nested` formats are emitted — their stdin carries
-    /// `hook_event_name`, so the remote hook handles them with no `--event` flag.
-    /// Other formats (flat/Cursor, traecli, copilot, kimi, …) are skipped remotely (#192).
+    /// Only `.claude` / `.nested` custom CLIs can be installed remotely — their stdin
+    /// carries `hook_event_name`, so the remote hook handles them with no `--event`
+    /// flag. Other formats (flat/Cursor, traecli, copilot, kimi, …) are not (#192);
+    /// they are listed in the status line as skipped instead of vanishing (#342).
+    private static func isRemoteSupportedCustomFormat(_ format: HookFormat) -> Bool {
+        format == .claude || format == .nested
+    }
+
+    /// A custom CLI's config path is typed on the Mac, where `~/x`, `x` and
+    /// `<Mac home>/x` all mean "under my home". The remote script joins it onto the
+    /// REMOTE `$HOME` with pathlib, which neither expands `~` (`~/x` became the
+    /// literal `$HOME/~/x`) nor knows the Mac home (`/Users/me/x` does not exist on a
+    /// Linux host) — so the config dir never existed and the CLI was always
+    /// "skipped" (#342). Rewrite both to home-relative; any other absolute path is
+    /// kept verbatim.
+    static func remoteCustomConfigPath(_ configPath: String, localHome: String = NSHomeDirectory()) -> String {
+        let path = configPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        var relative: Substring
+        if path.hasPrefix("~/") {
+            relative = path.dropFirst(2)
+        } else if !localHome.isEmpty, localHome != "/", path.hasPrefix(localHome + "/") {
+            relative = path.dropFirst(localHome.count + 1)
+        } else {
+            return path
+        }
+        while relative.hasPrefix("/") { relative = relative.dropFirst() }
+        return String(relative)
+    }
+
+    /// Serialize the remotely installable custom CLI configs into a Python list
+    /// literal for the remote install script.
     private static func remoteCustomCLIsLiteral(_ clis: [CLIConfig]) -> String {
-        let supported = clis.filter { $0.format == .claude || $0.format == .nested }
+        let supported = clis.filter { isRemoteSupportedCustomFormat($0.format) }
         let entries = supported.map { cli -> String in
             let fmt = cli.format == .claude ? "claude" : "nested"
             let events = cli.events
@@ -1021,7 +1067,7 @@ print(" · ".join(parts))
             return "{"
                 + "\"name\": \(pythonStringLiteral(cli.name)), "
                 + "\"source\": \(pythonStringLiteral(cli.source)), "
-                + "\"config_path\": \(pythonStringLiteral(cli.configPath)), "
+                + "\"config_path\": \(pythonStringLiteral(remoteCustomConfigPath(cli.configPath))), "
                 + "\"config_key\": \(pythonStringLiteral(cli.configKey)), "
                 + "\"format\": \(pythonStringLiteral(fmt)), "
                 + "\"events\": [\(events)]"

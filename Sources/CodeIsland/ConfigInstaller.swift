@@ -669,7 +669,7 @@ struct ConfigInstaller {
                 ("PostToolUse", 5, false),
                 ("Stop", 5, false),
             ]
-        case .flat, .traeIDE:
+        case .flat:
             return [
                 ("beforeSubmitPrompt", 5, false),
                 ("beforeShellExecution", 5, false),
@@ -681,6 +681,21 @@ struct ConfigInstaller {
                 ("afterAgentThought", 5, false),
                 ("afterAgentResponse", 5, false),
                 ("stop", 5, false),
+            ]
+        case .traeIDE:
+            // Trae CN was observed to fire these events for the main session: UserPromptSubmit, PreToolUse, PostToolUse, Stop, Notification.
+            // Other Claude-style events will not be triggered for now; they are retained.
+            return [
+                ("UserPromptSubmit", 5, true),
+                ("PreToolUse", 5, false),
+                ("PostToolUse", 5, true),
+                ("SessionStart", 5, false),
+                ("SessionEnd", 5, true),
+                ("Stop", 5, true),
+                ("SubagentStart", 5, true),
+                ("SubagentStop", 5, true),
+                ("Notification", 86400, false),
+                ("PreCompact", 5, true),
             ]
         case .traecli:
             return [

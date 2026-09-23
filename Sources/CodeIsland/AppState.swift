@@ -1853,38 +1853,41 @@ final class AppState {
             log.info("Ignored companion question answer because question queue is empty")
             return
         }
-        if let expectedSessionId,
-           questionQueue.first?.event.sessionId ?? "default" != expectedSessionId {
-            // The card the phone was showing is no longer at the head. Route by
-            // identity rather than answering a question the user never read.
+        // Route by the card the phone was showing, which need not be the head:
+        // never answer a question the user never read. Gone entirely (answered
+        // in the terminal) → answerQuestion discards it and resyncs.
+        guard let index = questionIndex(expecting: expectedSessionId) else {
             answerQuestion(answer, expectedSessionId: expectedSessionId)
             return
         }
 
-        if questionQueue[0].isFromPermission,
-           var askState = questionQueue[0].askUserQuestionState {
-            guard let index = askState.items.firstIndex(where: { askState.answers[$0.answerKey] == nil }) else {
+        // AskUserQuestion is answered one question at a time from the phone.
+        // This must run at the addressed index too: answerQuestion() ignores
+        // wizard requests, so handing a non-head one to it dropped the answer.
+        if questionQueue[index].isFromPermission,
+           var askState = questionQueue[index].askUserQuestionState {
+            guard let itemIndex = askState.items.firstIndex(where: { askState.answers[$0.answerKey] == nil }) else {
                 answerQuestionMulti(askState.items.map {
                     (question: $0.payload.question, answer: askState.answers[$0.answerKey] ?? "")
-                })
+                }, expectedSessionId: expectedSessionId)
                 return
             }
 
-            let item = askState.items[index]
+            let item = askState.items[itemIndex]
             askState.answers[item.answerKey] = answer
-            questionQueue[0].askUserQuestionState = askState
+            questionQueue[index].askUserQuestionState = askState
 
             if askState.canConfirm {
                 answerQuestionMulti(askState.items.map {
                     (question: $0.payload.question, answer: askState.answers[$0.answerKey] ?? "")
-                })
+                }, expectedSessionId: expectedSessionId)
             } else {
                 refreshDerivedState()
             }
             return
         }
 
-        answerQuestion(answer)
+        answerQuestion(answer, expectedSessionId: expectedSessionId)
     }
 
     /// Find an existing session whose source matches and whose CLI PID equals

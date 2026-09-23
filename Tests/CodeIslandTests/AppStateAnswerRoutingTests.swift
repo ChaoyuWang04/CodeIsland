@@ -674,6 +674,39 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         _ = await secondResponse.value
     }
 
+    /// Same as above for AskUserQuestion. The non-head branch handed the
+    /// answer to answerQuestion(), which ignores wizard requests, so an
+    /// iPhone answer for any session but the head was silently dropped.
+    func testCompanionAnswerReachesAnAskUserQuestionQueuedBehindAnotherSession() async throws {
+        let appState = AppState()
+        let first = try makeAskUserQuestionEvent(sessionId: "s-first", text: "First?")
+        let second = try makeAskUserQuestionEvent(sessionId: "s-second", text: "Second?")
+
+        _ = Task<Data, Never> {
+            await withCheckedContinuation { appState.handleAskUserQuestion(first, continuation: $0) }
+        }
+        await Task.yield()
+        let secondResponse = Task<Data, Never> {
+            await withCheckedContinuation { appState.handleAskUserQuestion(second, continuation: $0) }
+        }
+        await Task.yield()
+        XCTAssertEqual(appState.questionQueue.count, 2)
+
+        appState.answerCompanionQuestion("No", expectedSessionId: "s-second")
+
+        guard assertQueue(
+            appState.questionQueue.map { $0.event.sessionId },
+            ["s-first"],
+            "the phone's answer must resolve the AskUserQuestion it named"
+        ) else { return }
+        XCTAssertNil(
+            appState.questionQueue[0].askUserQuestionState?.answers["First?"],
+            "the head session's question must not be touched"
+        )
+        let answers = try extractAnswers(from: await secondResponse.value)
+        XCTAssertEqual(answers as? [String: String], ["Second?": "No"])
+    }
+
     // MARK: - Helpers
 
     /// Assert the post-action queue, and report whether it held. Every await in

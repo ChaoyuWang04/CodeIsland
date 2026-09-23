@@ -300,4 +300,16 @@ final class NotchHoverInteractionTests: XCTestCase {
     func testSessionJumpValidationUsesThreeIncreasingDelays() {
         XCTAssertEqual(sessionJumpValidationDelays, [120_000_000, 320_000_000, 640_000_000])
     }
+
+    /// #297 — a question card popping up (or opening under a passing mouse)
+    /// must not pull the caret out of the editor the user is typing in.
+    func testQuestionFieldDoesNotTakeFocusWhileTheUserIsElsewhere() {
+        XCTAssertFalse(NotchCardFocusPolicy.shouldFocusQuestionFieldOnAppear(panelIsKeyWindow: false))
+    }
+
+    /// Once the user has clicked into the island it already holds the keyboard,
+    /// so landing the caret in the answer field only saves them a second click.
+    func testQuestionFieldTakesFocusWhenTheUserIsAlreadyInThePanel() {
+        XCTAssertTrue(NotchCardFocusPolicy.shouldFocusQuestionFieldOnAppear(panelIsKeyWindow: true))
+    }
 }

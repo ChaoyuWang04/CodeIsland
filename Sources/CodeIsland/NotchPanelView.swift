@@ -1251,6 +1251,19 @@ struct QuestionWizardState {
     }
 }
 
+/// When a notch card may pull keyboard focus into its own text field (#297).
+enum NotchCardFocusPolicy {
+    /// The island is a non-activating overlay: a question card usually appears
+    /// while the user is typing in their editor, or opens under a mouse that is
+    /// only passing over to read it. Focusing the answer field then took the
+    /// keystrokes meant for the editor. Only do it when the user is already
+    /// working in the panel (it is key because they clicked into it); otherwise
+    /// the field takes focus when clicked, like any text field.
+    static func shouldFocusQuestionFieldOnAppear(panelIsKeyWindow: Bool) -> Bool {
+        panelIsKeyWindow
+    }
+}
+
 private struct QuestionBar: View {
     let question: String
     let options: [String]?
@@ -1314,7 +1327,12 @@ private struct QuestionBar: View {
         }
         .padding(.vertical, 10)
         .offset(x: failureShakeOffset)
-        .onAppear { isFocused = true }
+        .onAppear {
+            let panelIsKey = (NSApp.delegate as? AppDelegate)?.panelController?.isPanelKeyWindow ?? false
+            if NotchCardFocusPolicy.shouldFocusQuestionFieldOnAppear(panelIsKeyWindow: panelIsKey) {
+                isFocused = true
+            }
+        }
         .onChange(of: requestId, initial: true) { _, newId in
             // The caller keys this view by request, so a new request normally
             // gets a fresh view; this keeps the wizard honest if it does not.

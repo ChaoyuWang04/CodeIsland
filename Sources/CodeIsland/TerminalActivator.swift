@@ -52,7 +52,9 @@ struct TerminalActivator {
         "codex": "com.openai.codex",
         "cursor": "com.todesktop.230313mzl4w4u92",
         "trae": "com.trae.app",
-        "traecn": "com.trae.app",
+        // Trae CN is its own install with its own bundle id (Homebrew trae-cn
+        // cask; TraeCode CN 3.3.104 Info.plist), not the international Trae.app.
+        "traecn": "cn.trae.app",
         "qoder": "com.qoder.ide",
         "droid": "com.factory.app",
         "codebuddy": "com.tencent.codebuddy",
@@ -73,6 +75,7 @@ struct TerminalActivator {
         "com.openai.codex": "Codex",
         "com.todesktop.230313mzl4w4u92": "Cursor",
         "com.trae.app": "Trae",
+        "cn.trae.app": "Trae CN",
         "com.qoder.ide": "Qoder",
         "com.factory.app": "Factory",
         "com.tencent.codebuddy": "CodeBuddy",

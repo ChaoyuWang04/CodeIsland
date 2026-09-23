@@ -1,11 +1,35 @@
 import Foundation
 
 public enum CLIProcessResolver {
+    /// Lowercased bundle markers of the Trae CN desktop IDE (bundle id
+    /// `cn.trae.app`). It has shipped as `Trae CN.app` since its first macOS
+    /// build (Homebrew `trae-cn` cask; TraeCode CN 3.3.104 still is), with
+    /// `Electron` as the main binary and `Trae CN Helper …` helpers — so the
+    /// generic `/traecn` substring rule never matched it. `TraeCode CN.app`
+    /// covers the product's new `nameAlias`, and `TraeCN.app` the name this
+    /// code first assumed. None of them matches the international `Trae.app`.
+    public static let traeCNBundlePathMarkers = [
+        "/trae cn.app/contents/",
+        "/traecode cn.app/contents/",
+        "/traecn.app/contents/",
+    ]
+
+    public static func isTraeCNBundlePath(_ path: String) -> Bool {
+        let lowercasedPath = path.lowercased()
+        return traeCNBundlePathMarkers.contains { lowercasedPath.contains($0) }
+    }
+
     public static func sourceMatchesExecutablePath(_ path: String, source: String?) -> Bool {
         guard let normalizedSource = SessionSnapshot.normalizedSupportedSource(source) else { return false }
         let lowercasedPath = path.lowercased()
 
         switch normalizedSource {
+        case "traecn":
+            // Trae CN runs hooks through `bash -c`, so the bridge's own parent
+            // is a throwaway shell. Matching the bundle lets `_ppid` resolve to
+            // the long-lived Trae CN process instead; tracking the shell would
+            // idle or drop the card as soon as each hook returns.
+            return isTraeCNBundlePath(lowercasedPath)
         case "traecli":
             return lowercasedPath.hasSuffix("/coco")
                 || lowercasedPath.hasSuffix("/traecli")

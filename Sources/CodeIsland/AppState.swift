@@ -694,15 +694,13 @@ final class AppState {
         return qoderIDEBundlePrefixes.contains { path.contains($0) }
     }
 
-    nonisolated static let traeCNIDEBundlePrefixes = [
-        "/traecn.app/contents/",
-        "/trae cn.app/contents/",
-        "/traecode cn.app/contents/",
-    ]
-
+    /// Is `executablePath` inside the Trae CN IDE bundle, under any name it
+    /// ships as? It never matches the international `Trae.app`: the two
+    /// editions are separate installs and must not keep each other's
+    /// sessions alive. The markers live in CodeIslandCore so the bridge's
+    /// `_ppid` resolution uses the same list.
     nonisolated static func isTraeCNIDEBundlePath(_ executablePath: String) -> Bool {
-        let path = executablePath.lowercased()
-        return traeCNIDEBundlePrefixes.contains { path.contains($0) }
+        CLIProcessResolver.isTraeCNBundlePath(executablePath)
     }
 
     private nonisolated static func isNativeAppProcess(_ pid: pid_t, source: String) -> Bool {
@@ -4697,8 +4695,7 @@ final class AppState {
 
     private nonisolated static func findTraeCNPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
         findPids(
-            matchingPathSubstrings: [
-                "/traecn.app/contents/macos/trae",
+            matchingPathSubstrings: CLIProcessResolver.traeCNBundlePathMarkers + [
                 "/trae-cn.app/contents/macos/trae",
                 "/.traecn/",
                 "/.trae-cn/",

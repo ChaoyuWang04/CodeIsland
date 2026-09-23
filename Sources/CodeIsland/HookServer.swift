@@ -304,12 +304,12 @@ class HookServer {
 
     static func routeKind(for event: HookEvent) -> RouteKind {
         let normalizedEventName = EventNormalizer.normalize(event.eventName)
-        let source = event.rawJSON["_source"] as? String
-        let normalizedSource = SessionSnapshot.normalizedSupportedSource(source)
-        let isGeminiBasedSource = normalizedSource == "google-antigravity" || normalizedSource == "gemini"
-        // Gemini CLI and Google Antigravity send their blocking approval as PreToolUse.
-        // Route those source-tagged events through the same permission UI path.
-        if normalizedEventName == "PermissionRequest" || (isGeminiBasedSource && normalizedEventName == "PreToolUse") {
+        // Google Antigravity's PreToolUse stays a plain activity event. Its hook
+        // cannot approve a call (an `allow` is ignored and Antigravity prompts
+        // anyway), so an island card in front of it only doubled every approval
+        // and left a card behind when the user answered in Antigravity. The
+        // bridge has already told Antigravity to decide for itself (#339).
+        if normalizedEventName == "PermissionRequest" {
             return .permission
         }
         if normalizedEventName == "Notification", QuestionPayload.from(event: event) != nil {

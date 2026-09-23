@@ -218,6 +218,19 @@ if let idx = args.firstIndex(of: "--event"), idx + 1 < args.count {
     eventTag = args[idx + 1]
 }
 
+// Google Antigravity refuses the tool call when its PreToolUse hook prints no
+// decision, so answer before any of the early exits below can leave stdout
+// empty (island not running, CODEISLAND_SKIP, a deadline). The island only
+// observes Antigravity tool calls; the decision stays with Antigravity (#339).
+var wroteAntigravityDecision = false
+func writeAntigravityDecisionIfNeeded(eventName: String?) {
+    guard !wroteAntigravityDecision,
+          let stdout = AntigravityHookContract.hookStdout(source: sourceTag, eventName: eventName) else { return }
+    wroteAntigravityDecision = true
+    FileHandle.standardOutput.write(Data(stdout.utf8))
+}
+writeAntigravityDecisionIfNeeded(eventName: eventTag)
+
 // Quick exit: skip if CODEISLAND_SKIP is set
 guard env["CODEISLAND_SKIP"] == nil else { exit(0) }
 
@@ -453,12 +466,14 @@ guard let sessionId = json["session_id"] as? String, !sessionId.isEmpty else {
 // Event type detection
 let eventName = json["hook_event_name"] as? String ?? ""
 let normalizedEventName = EventNormalizer.normalize(eventName)
-// Gemini CLI (--source gemini) and Google Antigravity (--source google-antigravity) both
-// send PreToolUse in the JSON payload; treat it as a blocking permission event for both.
+// agy wired through Gemini-style hooks names the event on stdin, not in --event.
+writeAntigravityDecisionIfNeeded(eventName: eventName)
 let isGeminiBasedSource = sourceTag == "google-antigravity" || sourceTag == "gemini"
     || effectiveSource == "google-antigravity" || effectiveSource == "gemini"
+// Antigravity's PreToolUse is NOT a blocking approval: it was already answered
+// above, and holding it for an island card only stacked a second prompt in
+// front of Antigravity's own (#339).
 let isPermission = normalizedEventName == "PermissionRequest"
-    || (isGeminiBasedSource && normalizedEventName == "PreToolUse")
 let isQuestion = (normalizedEventName == "Notification" || eventName == "afterAgentThought")
     && json["question"] as? String != nil
 let isBlocking = isPermission || isQuestion

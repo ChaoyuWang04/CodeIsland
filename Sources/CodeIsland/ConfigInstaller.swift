@@ -757,11 +757,15 @@ struct ConfigInstaller {
             return []
         case .antigravityNamed:
             // Antigravity hooks.json uses Claude-style PascalCase event names.
-            // We install the three actionable events for status/permission.
+            // We install the three actionable events for status.
             // PreInvocation/PostInvocation are pass-through with no internal
             // meaning, so they're omitted. Timeout is in SECONDS (docs default 30).
+            // PreToolUse no longer waits on an island card — the bridge answers
+            // `ask` at once (#339) — and a hook Antigravity has to kill counts
+            // as a denial, so it keeps the documented default rather than a
+            // day-long ceiling nothing should ever reach.
             return [
-                ("PreToolUse", 86400, false),
+                ("PreToolUse", 30, false),
                 ("PostToolUse", 5, false),
                 ("Stop", 5, false),
             ]

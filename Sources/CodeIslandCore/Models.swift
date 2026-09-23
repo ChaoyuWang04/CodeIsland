@@ -253,8 +253,30 @@ public struct HookEvent {
         self.toolInput = HookEvent.firstDictionary(in: json, keys: ["tool_input", "toolInput", "input", "arguments", "args", "params"])
             ?? HookEvent.firstDictionary(inNestedDictionary: json, containerKeys: ["tool", "payload", "data"], keys: ["input", "tool_input", "toolInput", "arguments", "args", "params"])
             ?? HookEvent.firstDictionary(inNestedDictionary: json, containerKeys: ["toolCall"], keys: ["args"])
-        self.agentId = json["agent_id"] as? String
+        self.agentId = HookEvent.agentIdMarksSubagent(source: json["_source"] as? String)
+            ? json["agent_id"] as? String
+            : nil
         self.rawJSON = json
+    }
+
+    /// Whether a payload's `agent_id` identifies a subagent working under the
+    /// session (Claude Code's contract, which the reducer's subagent routing
+    /// is built on).
+    ///
+    /// TRAE's desktop IDE (Trae / Trae CN) stamps EVERY hook with the id of
+    /// the agent running it — the main conversation included — as a common
+    /// field next to `agent_type` (docs.trae.cn/enterprise_hook-configuration-reference,
+    /// 请求体通用字段). The main agent's id is a stable built-in name such as
+    /// `solo_agent` or `builder_v3`, or a custom agent's id, and TraeCode has
+    /// no SubagentStart/SubagentStop events. Treated as a subagent, the whole
+    /// conversation was parked in `subagents` (SessionStart and prompts never
+    /// reached the card) and its first Stop tombstoned the id, so every later
+    /// turn was dropped. The raw id stays in `rawJSON`.
+    static func agentIdMarksSubagent(source: String?) -> Bool {
+        switch SessionSnapshot.normalizedSupportedSource(source) {
+        case "trae", "traecn": return false
+        default: return true
+        }
     }
 
     public var toolDescription: String? {

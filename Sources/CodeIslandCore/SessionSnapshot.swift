@@ -158,6 +158,10 @@ public struct SessionSnapshot: Sendable {
     public var orcaWorktreeId: String?
     public var cliPid: pid_t?            // CLI process PID (from bridge _ppid)
     public var cliStartTime: Date?       // Start time of the tracked CLI PID (guards PID reuse)
+    /// UI harness (T3 Code, …) that spawned the CLI, found by walking the
+    /// ancestry of `cliPid`. Resolved off the main actor and re-read rather
+    /// than persisted: the harness may have restarted between runs. (#321)
+    public var hostHarness: HostHarness?
     public var source: String = "claude" // "claude" or "codex"
     public var interrupted: Bool = false
     /// Cline-specific: true after TaskComplete/TaskCancel until the next TaskStart/TaskResume.
@@ -794,6 +798,10 @@ public struct SessionSnapshot: Sendable {
     /// innermost layer — the one the CLI actually sits in — wins, which is the
     /// same order `HerdrController.shouldRoute` uses to decide where a jump goes.
     public var multiplexerLabel: String? {
+        // Under a harness the multiplexer vars were inherited from wherever the
+        // harness server was started; the conversation is not in that pane, so
+        // naming it would point the user at the wrong place (#321).
+        if hostHarness != nil { return nil }
         if zellijPaneId != nil || zellijSessionName != nil { return "zellij" }
         if tmuxEnv != nil || tmuxPane != nil { return "tmux" }
         if hasHerdrRoute { return "herdr" }

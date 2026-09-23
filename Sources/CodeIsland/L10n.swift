@@ -405,6 +405,7 @@ final class L10n: ObservableObject {
         "reply_complete_placeholder": "Reply complete",
         "reply_failed_placeholder": "Reply failed",
         "reply_aborted_placeholder": "Reply interrupted",
+        "hosted_by_harness_hint": "Running under %@",
     ]
 
     private static let de: [String: String] = en.merging([
@@ -765,6 +766,7 @@ final class L10n: ObservableObject {
         "reply_complete_placeholder": "Antwort abgeschlossen",
         "reply_failed_placeholder": "Antwort fehlgeschlagen",
         "reply_aborted_placeholder": "Antwort abgebrochen",
+        "hosted_by_harness_hint": "Läuft unter %@",
     ]) { _, localized in localized }
 
     private static let zh: [String: String] = [
@@ -1129,6 +1131,7 @@ final class L10n: ObservableObject {
         "reply_complete_placeholder": "回复完成",
         "reply_failed_placeholder": "回复失败",
         "reply_aborted_placeholder": "回复已中断",
+        "hosted_by_harness_hint": "运行在 %@ 中",
     ]
 
     private static let zhHant: [String: String] = [
@@ -1493,6 +1496,7 @@ final class L10n: ObservableObject {
         "reply_complete_placeholder": "回覆完成",
         "reply_failed_placeholder": "回覆失敗",
         "reply_aborted_placeholder": "回覆已中斷",
+        "hosted_by_harness_hint": "執行於 %@ 中",
     ]
 
     private static let ja: [String: String] = [
@@ -1857,6 +1861,7 @@ final class L10n: ObservableObject {
         "reply_complete_placeholder": "返信完了",
         "reply_failed_placeholder": "返信失敗",
         "reply_aborted_placeholder": "返信中断",
+        "hosted_by_harness_hint": "%@ 上で実行中",
     ]
 
     private static let ko: [String: String] = [
@@ -2221,6 +2226,7 @@ final class L10n: ObservableObject {
         "reply_complete_placeholder": "답변 완료",
         "reply_failed_placeholder": "답변 실패",
         "reply_aborted_placeholder": "답변 중단",
+        "hosted_by_harness_hint": "%@에서 실행 중",
     ]
 
     private static let tr: [String: String] = [
@@ -2585,5 +2591,6 @@ final class L10n: ObservableObject {
         "reply_complete_placeholder": "Yanıt tamamlandı",
         "reply_failed_placeholder": "Yanıt başarısız",
         "reply_aborted_placeholder": "Yanıt kesildi",
+        "hosted_by_harness_hint": "%@ altında çalışıyor",
     ]
 }

@@ -96,6 +96,14 @@ struct TerminalActivator {
         allowHerdr: Bool = true
     ) {
         guard !session.isRemote else { return }
+        // A UI harness (T3 Code) owns the conversation: the terminal/multiplexer
+        // env the CLI inherited belongs to wherever the harness server was
+        // started, so jump to the harness instead — before Herdr/tmux routing,
+        // which would otherwise aim at that unrelated pane (#321).
+        if let harness = session.hostHarness {
+            HostHarnessSupport.activate(harness: harness, session: session, sessionId: sessionId)
+            return
+        }
         if allowHerdr && activateHerdrIfAvailable(session: session, sessionId: sessionId) {
             return
         }
